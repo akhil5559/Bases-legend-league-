@@ -1,24 +1,23 @@
-const { Client, GatewayIntentBits, Partials, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder } = require('discord.js');
+const express = require('express'); // ⬅️ keep-alive server
+const { Client, GatewayIntentBits, Partials, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
 const fetch = require('node-fetch');
 
-// ENV variables from Render
+// ENV variables
 const DISCORD_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID; // optional if global
 const MONGO_URI = process.env.MONGO_URI;
 const CLASH_API = process.env.CLASH_API;
 
-// Emojis
 const EMOJI_TROPHY = "<:trophy:1400826511799484476>";
 const EMOJI_OFFENSE = "<:Offence:1400826628099014676>";
 const EMOJI_DEFENSE = "<:emoji_9:1252010455694835743>";
 
-// Connect MongoDB
-mongoose.connect(MONGO_URI).then(() => console.log('✅ Connected to MongoDB')).catch(console.error);
+// MongoDB
+mongoose.connect(MONGO_URI).then(() => console.log('✅ MongoDB Connected')).catch(console.error);
 
-// Schema
+// Schemas
 const playerSchema = new mongoose.Schema({
   player_tag: String,
   name: String,
@@ -56,14 +55,14 @@ const commands = [
     .addStringOption(opt => opt.setName('color').setDescription('Embed color (hex)'))
 ].map(cmd => cmd.toJSON());
 
-// Register slash commands
+// Register commands
 client.once('ready', async () => {
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
   console.log(`🤖 Logged in as ${client.user.tag}`);
 });
 
-// Format leaderboard string
+// Format player
 const formatPlayer = (player, index) => {
   const offense = `${player.offense_trophies || 0}/${player.offense_attacks || 0}`;
   const defense = `${player.defense_trophies || 0}/${player.defense_defenses || 0}`;
@@ -80,9 +79,9 @@ const createLeaderboardEmbed = async (players, page = 0, nameFilter = '', color 
 
   const embed = new EmbedBuilder()
     .setTitle(`🏆 Trophy Leaderboard`)
-    .setColor(color || '#00FFFF')
+    .setColor(/^#?[0-9A-F]{6}$/i.test(color) ? color.replace('#', '') : '#00FFFF')
     .setDescription(description)
-    .setFooter({ text: `Last refreshed: 05-08-2025 05:00 AM | Page ${page + 1}/${pageCount}` });
+    .setFooter({ text: `Last refreshed: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} | Page ${page + 1}/${pageCount || 1}` });
 
   const buttons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('refresh').setLabel('🔁 Refresh').setStyle(ButtonStyle.Primary),
@@ -96,7 +95,6 @@ const createLeaderboardEmbed = async (players, page = 0, nameFilter = '', color 
 // Slash command handler
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
-
   const { commandName } = interaction;
 
   if (commandName === 'link') {
@@ -113,24 +111,23 @@ client.on('interactionCreate', async interaction => {
       prev_trophies: data.trophies,
       last_reset: new Date().toISOString().slice(0, 10)
     };
-
     await Player.updateOne({ player_tag: data.tag }, { $set: playerData }, { upsert: true });
     interaction.reply({ content: `Linked to **${data.name}**!`, ephemeral: true });
 
   } else if (commandName === 'unlink') {
     await Player.updateOne({ discord_id: interaction.user.id }, { $unset: { discord_id: "" } });
-    interaction.reply({ content: `Unlinked your account from leaderboard.`, ephemeral: true });
+    interaction.reply({ content: `Unlinked your account.`, ephemeral: true });
 
   } else if (commandName === 'remove') {
-    if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply({ content: 'You need admin permission.', ephemeral: true });
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      return interaction.reply({ content: 'Admin permission required.', ephemeral: true });
     }
     const tag = interaction.options.getString('tag').toUpperCase().replace('#', '');
     await Player.updateOne({ player_tag: tag }, { $unset: { discord_id: "" } });
-    interaction.reply({ content: `Removed player ${tag} from leaderboard.`, ephemeral: true });
+    interaction.reply({ content: `Removed ${tag} from leaderboard.`, ephemeral: true });
 
   } else if (commandName === 'leaderboard') {
-    const name = interaction.options.getString('name');
+    const name = interaction.options.getString('name') || '';
     const color = interaction.options.getString('color') || '#00FFFF';
     const players = await Player.find({ discord_id: { $ne: null } }).sort({ trophies: -1 });
 
@@ -143,30 +140,18 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
-  const message = interaction.message;
-  const oldEmbed = message.embeds[0];
+  const oldEmbed = interaction.message.embeds[0];
   const pageMatch = oldEmbed?.footer?.text?.match(/Page (\d+)\/(\d+)/);
   const page = pageMatch ? parseInt(pageMatch[1]) - 1 : 0;
   const maxPage = pageMatch ? parseInt(pageMatch[2]) : 1;
-  const name = ''; const color = '#00FFFF';
 
   const players = await Player.find({ discord_id: { $ne: null } }).sort({ trophies: -1 });
 
-  if (interaction.customId === 'refresh') {
-    const { embed, buttons } = await createLeaderboardEmbed(players, page, name, color);
-    await interaction.update({ embeds: [embed], components: [buttons] });
-
-  } else if (interaction.customId === 'next' && page + 1 < maxPage) {
-    const { embed, buttons } = await createLeaderboardEmbed(players, page + 1, name, color);
-    await interaction.update({ embeds: [embed], components: [buttons] });
-
-  } else if (interaction.customId === 'prev' && page > 0) {
-    const { embed, buttons } = await createLeaderboardEmbed(players, page - 1, name, color);
-    await interaction.update({ embeds: [embed], components: [buttons] });
-  }
+  const { embed, buttons } = await createLeaderboardEmbed(players, interaction.customId === 'next' ? page + 1 : interaction.customId === 'prev' ? page - 1 : page, '', '#00FFFF');
+  await interaction.update({ embeds: [embed], components: [buttons] });
 });
 
-// Background: update players every 2 minutes
+// Background updates
 cron.schedule('*/2 * * * *', async () => {
   const players = await Player.find({});
   for (const p of players) {
@@ -184,17 +169,18 @@ cron.schedule('*/2 * * * *', async () => {
       };
       await Player.updateOne({ player_tag: p.player_tag }, { $set: update });
     } catch (e) {
-      console.log('Update failed for', p.player_tag);
+      console.log('❌ Update failed for', p.player_tag);
     }
   }
-  console.log('[UPDATE] Player stats refreshed');
+  console.log('♻️ Player stats refreshed');
 });
 
-// Daily 10:30 AM IST reset
+// Daily Reset
 cron.schedule('0 10 * * *', async () => {
   const players = await Player.find({});
   const backup = new Backup({ data: players, timestamp: new Date().toISOString() });
   await backup.save();
+
   for (const p of players) {
     await Player.updateOne({ player_tag: p.player_tag }, {
       $set: {
@@ -207,10 +193,11 @@ cron.schedule('0 10 * * *', async () => {
       }
     });
   }
-  console.log('[DAILY RESET] Offense/Defense stats reset and backup created');
-}, {
-  timezone: 'Asia/Kolkata'
-});
+  console.log('🔁 Daily reset complete');
+}, { timezone: 'Asia/Kolkata' });
 
+// Keep-alive express server
+const app = express();
+app.get('/', (req, res) => res.send('Bot is alive!'));
+app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive server running'));
 client.login(DISCORD_TOKEN);
-      
