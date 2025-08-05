@@ -1,3 +1,6 @@
+import sys
+sys.modules['audioop'] = None  # ✅ Properly bypass audioop loading errors
+
 import discord, asyncio, requests, os, threading
 from discord.ext import commands, tasks
 from discord import app_commands, ui
@@ -5,9 +8,6 @@ from datetime import datetime
 from flask import Flask
 import traceback
 from pymongo import MongoClient
-
-# === AUDIOOP BYPASS ===
-discord.opus._load_default = lambda: None  # Bypass audioop/opus loading error
 
 # ======================= CONFIG =======================
 
