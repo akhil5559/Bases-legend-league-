@@ -6,6 +6,9 @@ from flask import Flask
 import traceback
 from pymongo import MongoClient
 
+# === AUDIOOP BYPASS ===
+discord.opus._load_default = lambda: None  # Bypass audioop/opus loading error
+
 # ======================= CONFIG =======================
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
