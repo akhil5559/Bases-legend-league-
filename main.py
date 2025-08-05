@@ -1,5 +1,17 @@
 import sys
-sys.modules['audioop'] = None  # ✅ Properly bypass audioop loading errors
+import types
+
+# ✅ Proper bypass for audioop-related crashes (e.g., on Render)
+sys.modules['audioop'] = types.ModuleType('audioop')
+sys.modules['audioop'].mul = lambda *args, **kwargs: None
+sys.modules['audioop'].add = lambda *args, **kwargs: None
+sys.modules['audioop'].getsample = lambda *args, **kwargs: 0
+sys.modules['audioop'].max = lambda *args, **kwargs: 0
+sys.modules['audioop'].minmax = lambda *args, **kwargs: (0, 0)
+sys.modules['audioop'].avg = lambda *args, **kwargs: 0
+sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
+sys.modules['audioop'].rms = lambda *args, **kwargs: 0
+sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
 import discord, asyncio, requests, os, threading
 from discord.ext import commands, tasks
