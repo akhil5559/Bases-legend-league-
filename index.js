@@ -1,4 +1,4 @@
-const express = require('express'); // ⬅️ keep-alive server
+const express = require('express');
 const { Client, GatewayIntentBits, Partials, REST, Routes, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
 const mongoose = require('mongoose');
 const cron = require('node-cron');
@@ -15,9 +15,9 @@ const EMOJI_OFFENSE = "<:Offence:1400826628099014676>";
 const EMOJI_DEFENSE = "<:emoji_9:1252010455694835743>";
 
 // MongoDB
-mongoose.connect(MONGO_URI).then(() => console.log('✅ MongoDB Connected')).catch(console.error);
+mongoose.connect(MONGO_URI).then(() => console.log('✅ MongoDB connected')).catch(console.error);
 
-// Schemas
+// Schema
 const playerSchema = new mongoose.Schema({
   player_tag: String,
   name: String,
@@ -55,14 +55,14 @@ const commands = [
     .addStringOption(opt => opt.setName('color').setDescription('Embed color (hex)'))
 ].map(cmd => cmd.toJSON());
 
-// Register commands
+// Register slash commands
 client.once('ready', async () => {
   const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
   await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log(`🤖 Logged in as ${client.user.tag}`);
+  console.log(`🤖 Bot is ready as ${client.user.tag}`);
 });
 
-// Format player
+// Format player display
 const formatPlayer = (player, index) => {
   const offense = `${player.offense_trophies || 0}/${player.offense_attacks || 0}`;
   const defense = `${player.defense_trophies || 0}/${player.defense_defenses || 0}`;
@@ -79,9 +79,9 @@ const createLeaderboardEmbed = async (players, page = 0, nameFilter = '', color 
 
   const embed = new EmbedBuilder()
     .setTitle(`🏆 Trophy Leaderboard`)
-    .setColor(/^#?[0-9A-F]{6}$/i.test(color) ? color.replace('#', '') : '#00FFFF')
+    .setColor(/^#?[0-9A-F]{6}$/i.test(color) ? color.replace('#', '') : '00FFFF')
     .setDescription(description)
-    .setFooter({ text: `Last refreshed: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} | Page ${page + 1}/${pageCount || 1}` });
+    .setFooter({ text: `Last updated: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })} | Page ${page + 1}/${pageCount || 1}` });
 
   const buttons = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('refresh').setLabel('🔁 Refresh').setStyle(ButtonStyle.Primary),
@@ -92,51 +92,70 @@ const createLeaderboardEmbed = async (players, page = 0, nameFilter = '', color 
   return { embed, buttons };
 };
 
-// Slash command handler
+// Slash commands handler
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
+
   const { commandName } = interaction;
 
   if (commandName === 'link') {
     const tag = interaction.options.getString('tag').toUpperCase().replace('#', '');
-    const response = await fetch(`${CLASH_API}/player/${tag}`);
-    if (!response.ok) return interaction.reply({ content: 'Invalid player tag.', ephemeral: true });
+    console.log(`[LINK] Requested tag: ${tag} by ${interaction.user.tag}`);
 
-    const data = await response.json();
-    const playerData = {
-      player_tag: data.tag,
-      name: data.name,
-      discord_id: interaction.user.id,
-      trophies: data.trophies,
-      prev_trophies: data.trophies,
-      last_reset: new Date().toISOString().slice(0, 10)
-    };
-    await Player.updateOne({ player_tag: data.tag }, { $set: playerData }, { upsert: true });
-    interaction.reply({ content: `Linked to **${data.name}**!`, ephemeral: true });
+    try {
+      const response = await fetch(`${CLASH_API}/player/${tag}`);
+      if (!response.ok) return interaction.reply({ content: 'Invalid tag or API failed.', ephemeral: true });
+
+      const data = await response.json();
+      const playerData = {
+        player_tag: data.tag,
+        name: data.name,
+        discord_id: interaction.user.id,
+        trophies: data.trophies,
+        prev_trophies: data.trophies,
+        last_reset: new Date().toISOString().slice(0, 10)
+      };
+
+      await Player.updateOne({ player_tag: data.tag }, { $set: playerData }, { upsert: true });
+      console.log(`[LINKED] ${data.name} (${data.tag}) to ${interaction.user.tag}`);
+      interaction.reply({ content: `✅ Linked to **${data.name}**`, ephemeral: true });
+
+    } catch (err) {
+      console.error('Link Error:', err);
+      interaction.reply({ content: '❌ Error linking account.', ephemeral: true });
+    }
 
   } else if (commandName === 'unlink') {
     await Player.updateOne({ discord_id: interaction.user.id }, { $unset: { discord_id: "" } });
-    interaction.reply({ content: `Unlinked your account.`, ephemeral: true });
+    interaction.reply({ content: '✅ Unlinked your account.', ephemeral: true });
 
   } else if (commandName === 'remove') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-      return interaction.reply({ content: 'Admin permission required.', ephemeral: true });
+      return interaction.reply({ content: '❌ Admin permission required.', ephemeral: true });
     }
     const tag = interaction.options.getString('tag').toUpperCase().replace('#', '');
     await Player.updateOne({ player_tag: tag }, { $unset: { discord_id: "" } });
-    interaction.reply({ content: `Removed ${tag} from leaderboard.`, ephemeral: true });
+    interaction.reply({ content: `✅ Removed player ${tag}`, ephemeral: true });
 
   } else if (commandName === 'leaderboard') {
     const name = interaction.options.getString('name') || '';
-    const color = interaction.options.getString('color') || '#00FFFF';
-    const players = await Player.find({ discord_id: { $ne: null } }).sort({ trophies: -1 });
+    const colorInput = interaction.options.getString('color') || '#00FFFF';
+    const color = /^#?[0-9A-F]{6}$/i.test(colorInput) ? colorInput.replace('#', '') : '00FFFF';
 
-    const { embed, buttons } = await createLeaderboardEmbed(players, 0, name, color);
-    await interaction.reply({ embeds: [embed], components: [buttons] });
+    try {
+      const players = await Player.find({ discord_id: { $ne: null } }).sort({ trophies: -1 });
+      console.log(`[LEADERBOARD] Showing ${players.length} players`);
+
+      const { embed, buttons } = await createLeaderboardEmbed(players, 0, name, color);
+      await interaction.reply({ embeds: [embed], components: [buttons] });
+    } catch (err) {
+      console.error('Leaderboard Error:', err);
+      interaction.reply({ content: '❌ Failed to load leaderboard.', ephemeral: true });
+    }
   }
 });
 
-// Button interactions
+// Button interaction
 client.on('interactionCreate', async interaction => {
   if (!interaction.isButton()) return;
 
@@ -146,36 +165,40 @@ client.on('interactionCreate', async interaction => {
   const maxPage = pageMatch ? parseInt(pageMatch[2]) : 1;
 
   const players = await Player.find({ discord_id: { $ne: null } }).sort({ trophies: -1 });
-
-  const { embed, buttons } = await createLeaderboardEmbed(players, interaction.customId === 'next' ? page + 1 : interaction.customId === 'prev' ? page - 1 : page, '', '#00FFFF');
+  const { embed, buttons } = await createLeaderboardEmbed(
+    players,
+    interaction.customId === 'next' ? page + 1 : interaction.customId === 'prev' ? page - 1 : page,
+    '',
+    '00FFFF'
+  );
   await interaction.update({ embeds: [embed], components: [buttons] });
 });
 
-// Background updates
+// Background player updater
 cron.schedule('*/2 * * * *', async () => {
   const players = await Player.find({});
   for (const p of players) {
     try {
       const res = await fetch(`${CLASH_API}/player/${p.player_tag}`);
       const data = await res.json();
-      const trophyDiff = data.trophies - p.trophies;
+      const diff = data.trophies - p.trophies;
       const update = {
         trophies: data.trophies,
         attacks: (p.attacks || 0) + 1,
-        offense_trophies: (p.offense_trophies || 0) + Math.max(0, trophyDiff),
+        offense_trophies: (p.offense_trophies || 0) + Math.max(0, diff),
         offense_attacks: (p.offense_attacks || 0) + 1,
-        defense_trophies: (p.defense_trophies || 0) + Math.max(0, -trophyDiff),
+        defense_trophies: (p.defense_trophies || 0) + Math.max(0, -diff),
         defense_defenses: (p.defense_defenses || 0) + 1
       };
       await Player.updateOne({ player_tag: p.player_tag }, { $set: update });
     } catch (e) {
-      console.log('❌ Update failed for', p.player_tag);
+      console.log(`❌ Failed update for ${p.player_tag}`);
     }
   }
-  console.log('♻️ Player stats refreshed');
+  console.log('♻️ Player stats updated');
 });
 
-// Daily Reset
+// Daily reset
 cron.schedule('0 10 * * *', async () => {
   const players = await Player.find({});
   const backup = new Backup({ data: players, timestamp: new Date().toISOString() });
@@ -193,11 +216,13 @@ cron.schedule('0 10 * * *', async () => {
       }
     });
   }
-  console.log('🔁 Daily reset complete');
+
+  console.log('🕙 Daily reset completed and backup saved');
 }, { timezone: 'Asia/Kolkata' });
 
-// Keep-alive express server
+// Keep-alive server
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 app.listen(process.env.PORT || 3000, () => console.log('🌐 Keep-alive server running'));
+
 client.login(DISCORD_TOKEN);
