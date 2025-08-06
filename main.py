@@ -18,9 +18,10 @@ from discord.ext import commands, tasks
 from discord import app_commands, ui
 from datetime import datetime
 from pymongo import MongoClient
-from keep_alive import keep_alive  # ✅ Using separate keep_alive file
+from keep_alive import keep_alive
+import pytz
 
-keep_alive()  # ✅ Start Flask keepalive server
+keep_alive()
 
 # ======================= CONFIG =======================
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -39,6 +40,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["coc_bot"]
 players_col = db["players"]
+backups_col = db["backups"]
 players_col.create_index([("trophies", -1)])
 
 # ======================= DB HELPERS =======================
@@ -104,9 +106,7 @@ def fetch_player_data(tag: str):
 
 async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
-
-# (continue in Part 2…)
-# ======================= BACKGROUND TASKS =======================
+    # ======================= BACKGROUND TASKS =======================
 @tasks.loop(minutes=1)
 async def update_players_data():
     players = get_all_players()
@@ -151,8 +151,19 @@ async def update_players_data():
 
 @tasks.loop(minutes=1)
 async def reset_offense_defense():
-    now = datetime.now()
-    if now.hour == 10 and now.minute == 30:
+    now = datetime.now(pytz.timezone("Asia/Kolkata"))
+    if now.hour == 10 and now.minute == 25:  # Backup 5 minutes before reset
+        try:
+            backup_data = get_all_players()
+            backups_col.insert_one({
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "players": backup_data
+            })
+            print("📦 Leaderboard backup created.")
+        except Exception as e:
+            print(f"❌ Backup failed: {e}")
+
+    elif now.hour == 10 and now.minute == 30:
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
@@ -161,7 +172,7 @@ async def reset_offense_defense():
                 "defense_defenses": 0
             }
         })
-        print("🔁 Daily reset done (10:30 AM)")
+        print("🔁 Daily reset done (10:30 AM IST)")
 
 # ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
@@ -171,22 +182,31 @@ class LeaderboardView(ui.View):
         self.color = color
         self.name = name
         self.page = page
+        self.last_refreshed = datetime.now().strftime("%d-%m-%Y %I:%M %p")
 
     def get_embed(self):
         start = self.page * LEADERBOARD_PAGE_SIZE
         end = start + LEADERBOARD_PAGE_SIZE
         embed = discord.Embed(title=self.name, color=self.color)
+
         for i, p in enumerate(self.players[start:end], start=start + 1):
             embed.add_field(
                 name=f"{i}. {p['name']} (#{p['player_tag']})",
-                value=f"{EMOJI_TROPHY} {p['trophies']} | {EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | {EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}",
+                value=(
+                    f"{EMOJI_TROPHY} {p['trophies']} | "
+                    f"{EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | "
+                    f"{EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}\n\u200b"
+                ),
                 inline=False
             )
+
+        embed.set_footer(text=f"Last refreshed: {self.last_refreshed}")
         return embed
 
     async def update_message(self, interaction):
-        await interaction.response.defer()  # ✅ added defer
+        await interaction.response.defer()
         self.players = get_all_players()
+        self.last_refreshed = datetime.now().strftime("%d-%m-%Y %I:%M %p")
         await interaction.edit_original_response(embed=self.get_embed(), view=self)
 
     @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
@@ -206,7 +226,7 @@ class LeaderboardView(ui.View):
         await self.update_message(interaction)
 
 # ======================= DISCORD COMMANDS =======================
-@bot.tree.command(name="link")
+@bot.tree.command(name="link", description="Link your Clash of Clans player tag to your Discord account.")
 @app_commands.describe(player_tag="Your Clash of Clans player tag (e.g. #8YJ98LV2C)")
 async def link(interaction: discord.Interaction, player_tag: str):
     await interaction.response.defer(thinking=True)
@@ -218,15 +238,15 @@ async def link(interaction: discord.Interaction, player_tag: str):
     else:
         await interaction.followup.send("❌ Failed to fetch player data. Please check the tag and try again.")
 
-@bot.tree.command(name="unlink")
+@bot.tree.command(name="unlink", description="Unlink your Clash of Clans tag from your Discord (or all if not specified).")
 @app_commands.describe(player_tag="Optional: tag to unlink (remove all if left blank)")
 async def unlink(interaction: discord.Interaction, player_tag: str = None):
-    await interaction.response.defer()  # ✅ defer added
+    await interaction.response.defer()
     tag = player_tag.replace("#", "").upper() if player_tag else None
     remove_player(interaction.user.id, tag)
     await interaction.followup.send("✅ Account unlinked.", ephemeral=True)
 
-@bot.tree.command(name="remove")
+@bot.tree.command(name="remove", description="Remove a player tag from the leaderboard (admin only).")
 @app_commands.describe(player_tag="Tag to forcibly remove from the leaderboard")
 async def remove(interaction: discord.Interaction, player_tag: str):
     await interaction.response.defer()
@@ -237,8 +257,8 @@ async def remove(interaction: discord.Interaction, player_tag: str):
     else:
         await interaction.followup.send("❌ Player not found.")
 
-@bot.tree.command(name="leaderboard")
-@app_commands.describe(color="Embed color (default blue)", name="Leaderboard title")
+@bot.tree.command(name="leaderboard", description="View the top players leaderboard with stats.")
+@app_commands.describe(color="Embed color (hex, e.g. 0x3498db)", name="Leaderboard title")
 async def leaderboard(interaction: discord.Interaction, color: str = "0x3498db", name: str = "🏆 Leaderboard"):
     await interaction.response.defer(thinking=True)
     try:
