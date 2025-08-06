@@ -51,6 +51,7 @@ threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["coc_bot"]
 players_col = db["players"]
+players_col.create_index([("trophies", -1)])  # ✅ Ensure sorted performance
 
 def add_or_update_player(discord_id, tag, data):
     update = {
@@ -85,18 +86,31 @@ def remove_player(discord_id, tag=None):
 
 def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
-    url = f"{PROXY_URL}/player/{tag_encoded.replace('#', '%23')}"
-    r = requests.get(url)
-    if r.status_code != 200:
+    tag_encoded = tag_encoded.replace("#", "%23")
+    url = f"{PROXY_URL}/player/{tag_encoded}"
+
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            print(f"❌ HTTP {r.status_code} for {tag} -> {r.text}")
+            return None
+
+        data = r.json()
+        if not data or "name" not in data or "trophies" not in data:
+            print(f"⚠️ Incomplete data for {tag} -> {data}")
+            return None
+
+        return {
+            "name": data["name"],
+            "trophies": data["trophies"],
+            "rank": data.get("rank", 0),
+            "attacks": len(data.get("attackLog", [])),
+            "defenses": len(data.get("defenseLog", []))
+        }
+
+    except Exception as e:
+        print(f"❌ Exception for {tag}: {e}")
         return None
-    data = r.json()
-    return {
-        "name": data["name"],
-        "trophies": data["trophies"],
-        "rank": data.get("rank", 0),
-        "attacks": len(data.get("attackLog", [])),
-        "defenses": len(data.get("defenseLog", []))
-    }
 
 # ======================= BACKGROUND TASKS =======================
 
@@ -107,6 +121,8 @@ async def update_players_data():
     for player in players:
         discord_id = player["discord_id"]
         tag = player["player_tag"]
+        print(f"🔄 Updating {tag}...")
+
         trophies = player["trophies"]
         rank = player.get("rank", 0)
         off_t = player.get("offense_trophies", 0)
@@ -219,7 +235,7 @@ async def link(interaction: discord.Interaction, player_tag: str):
     await interaction.response.defer()
     data = fetch_player_data(player_tag)
     if not data:
-        await interaction.followup.send("❌ Failed to fetch data!")
+        await interaction.followup.send("❌ Failed to fetch data! Please check your tag or try again later.")
         return
     add_or_update_player(str(interaction.user.id), player_tag.replace("#", ""), data)
     await interaction.followup.send(f"✅ Linked {data['name']} ({player_tag})")
@@ -232,6 +248,7 @@ async def unlink(interaction: discord.Interaction, player_tag: str = None):
 @bot.tree.command(name="leaderboard", description="Show the leaderboard")
 async def leaderboard(interaction: discord.Interaction, name: str = "Leaderboard", color: str = "000000"):
     players = get_all_players()
+    print(f"📥 /leaderboard called by {interaction.user} - {len(players)} players found")
     if not players:
         await interaction.response.send_message("❌ No players linked yet.")
         return
