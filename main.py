@@ -1,7 +1,7 @@
 import sys
 import types
 
-# ✅ Proper bypass for audioop-related crashes (e.g., on Render)
+# ✅ Bypass for audioop crashes
 sys.modules['audioop'] = types.ModuleType('audioop')
 sys.modules['audioop'].mul = lambda *args, **kwargs: None
 sys.modules['audioop'].add = lambda *args, **kwargs: None
@@ -13,12 +13,14 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-import discord, asyncio, requests, os, threading, traceback
+import discord, asyncio, requests, os, traceback
 from discord.ext import commands, tasks
 from discord import app_commands, ui
 from datetime import datetime
-from flask import Flask
 from pymongo import MongoClient
+from keep_alive import keep_alive  # ✅ Using separate keep_alive file
+
+keep_alive()  # ✅ Start Flask keepalive server
 
 # ======================= CONFIG =======================
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -32,15 +34,6 @@ EMOJI_DEFENSE = "<:emoji_9:1252010455694835743>"
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
-
-# ======================= FLASK KEEPALIVE =======================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
-threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
 # ======================= MONGO INIT =======================
 mongo_client = MongoClient(MONGO_URI)
@@ -79,7 +72,8 @@ def remove_player(discord_id, tag=None):
     else:
         result = players_col.delete_many({"discord_id": discord_id})
         print(f"🔁 Removed all: matched={result.deleted_count}")
-  # ======================= API CALL =======================
+
+# ======================= SAFE API CALL =======================
 def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
     tag_encoded = tag_encoded.replace("#", "%23")
@@ -108,6 +102,10 @@ def fetch_player_data(tag: str):
         print(f"❌ Exception for {tag}: {e}")
         return None
 
+async def async_fetch_player_data(tag):
+    return await asyncio.to_thread(fetch_player_data, tag)
+
+# (continue in Part 2…)
 # ======================= BACKGROUND TASKS =======================
 @tasks.loop(minutes=1)
 async def update_players_data():
@@ -125,7 +123,7 @@ async def update_players_data():
             def_t = player.get("defense_trophies", 0)
             def_d = player.get("defense_defenses", 0)
 
-            data = fetch_player_data(tag)
+            data = await async_fetch_player_data(tag)
             if data:
                 delta = data["trophies"] - trophies
                 if delta > 0:
@@ -187,8 +185,9 @@ class LeaderboardView(ui.View):
         return embed
 
     async def update_message(self, interaction):
+        await interaction.response.defer()  # ✅ added defer
         self.players = get_all_players()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        await interaction.edit_original_response(embed=self.get_embed(), view=self)
 
     @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
     async def prev_page(self, interaction, button):
@@ -204,15 +203,15 @@ class LeaderboardView(ui.View):
 
     @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction, button):
-        self.players = get_all_players()
         await self.update_message(interaction)
+
 # ======================= DISCORD COMMANDS =======================
 @bot.tree.command(name="link")
 @app_commands.describe(player_tag="Your Clash of Clans player tag (e.g. #8YJ98LV2C)")
 async def link(interaction: discord.Interaction, player_tag: str):
     await interaction.response.defer(thinking=True)
     tag = player_tag.replace("#", "").upper()
-    data = fetch_player_data(tag)
+    data = await async_fetch_player_data(tag)
     if data:
         add_or_update_player(interaction.user.id, tag, data)
         await interaction.followup.send(f"✅ Linked **{data['name']}** (`{player_tag}`) to your account.")
@@ -222,30 +221,33 @@ async def link(interaction: discord.Interaction, player_tag: str):
 @bot.tree.command(name="unlink")
 @app_commands.describe(player_tag="Optional: tag to unlink (remove all if left blank)")
 async def unlink(interaction: discord.Interaction, player_tag: str = None):
+    await interaction.response.defer()  # ✅ defer added
     tag = player_tag.replace("#", "").upper() if player_tag else None
     remove_player(interaction.user.id, tag)
-    await interaction.response.send_message("✅ Account unlinked.", ephemeral=True)
+    await interaction.followup.send("✅ Account unlinked.", ephemeral=True)
 
 @bot.tree.command(name="remove")
 @app_commands.describe(player_tag="Tag to forcibly remove from the leaderboard")
 async def remove(interaction: discord.Interaction, player_tag: str):
+    await interaction.response.defer()
     tag = player_tag.replace("#", "").upper()
     result = players_col.delete_one({"player_tag": tag})
     if result.deleted_count:
-        await interaction.response.send_message(f"✅ Removed player `{tag}` from leaderboard.")
+        await interaction.followup.send(f"✅ Removed player `{tag}` from leaderboard.")
     else:
-        await interaction.response.send_message("❌ Player not found.")
+        await interaction.followup.send("❌ Player not found.")
 
 @bot.tree.command(name="leaderboard")
 @app_commands.describe(color="Embed color (default blue)", name="Leaderboard title")
 async def leaderboard(interaction: discord.Interaction, color: str = "0x3498db", name: str = "🏆 Leaderboard"):
+    await interaction.response.defer(thinking=True)
     try:
         color = int(color, 16)
     except:
         color = 0x3498db
     players = get_all_players()
     view = LeaderboardView(players, color, name)
-    await interaction.response.send_message(embed=view.get_embed(), view=view)
+    await interaction.followup.send(embed=view.get_embed(), view=view)
 
 # ======================= BOT STARTUP =======================
 @bot.event
