@@ -78,9 +78,11 @@ def get_all_players():
 
 def remove_player(discord_id, tag=None):
     if tag:
-        players_col.delete_one({"discord_id": discord_id, "player_tag": tag})
+        result = players_col.delete_one({"discord_id": discord_id, "player_tag": tag.replace("#", "")})
+        print(f"🗑 Removed by tag: {tag} → Deleted: {result.deleted_count}")
     else:
-        players_col.delete_many({"discord_id": discord_id})
+        result = players_col.delete_many({"discord_id": discord_id})
+        print(f"🗑 Removed all for {discord_id} → Deleted: {result.deleted_count}")
 
 # ======================= API FUNCTION =======================
 
@@ -111,154 +113,129 @@ def fetch_player_data(tag: str):
     except Exception as e:
         print(f"❌ Exception for {tag}: {e}")
         return None
-
-# ======================= BACKGROUND TASKS =======================
+# ======================= BACKGROUND UPDATER =======================
 
 @tasks.loop(minutes=1)
 async def update_players_data():
     players = get_all_players()
     print(f"\n⏳ Background update started: {len(players)} players...")
     for player in players:
-        discord_id = player["discord_id"]
-        tag = player["player_tag"]
-        print(f"🔄 Updating {tag}...")
+        try:
+            discord_id = player["discord_id"]
+            tag = player["player_tag"]
 
-        trophies = player["trophies"]
-        rank = player.get("rank", 0)
-        off_t = player.get("offense_trophies", 0)
-        off_a = player.get("offense_attacks", 0)
-        def_t = player.get("defense_trophies", 0)
-        def_d = player.get("defense_defenses", 0)
+            trophies = player["trophies"]
+            rank = player.get("rank", 0)
+            off_t = player.get("offense_trophies", 0)
+            off_a = player.get("offense_attacks", 0)
+            def_t = player.get("defense_trophies", 0)
+            def_d = player.get("defense_defenses", 0)
 
-        data = fetch_player_data(tag)
-        if data:
-            delta_trophies = data["trophies"] - trophies
-            if delta_trophies > 0:
-                off_t += delta_trophies
-                off_a += 1
-            elif delta_trophies < 0:
-                def_t += abs(delta_trophies)
-                def_d += 1
+            data = fetch_player_data(tag)
+            if data:
+                delta_trophies = data["trophies"] - trophies
+                if delta_trophies > 0:
+                    off_t += delta_trophies
+                    off_a += 1
+                elif delta_trophies < 0:
+                    def_t += abs(delta_trophies)
+                    def_d += 1
 
-            data.update({
-                "prev_trophies": trophies,
-                "prev_rank": rank,
-                "offense_trophies": off_t,
-                "offense_attacks": off_a,
-                "defense_trophies": def_t,
-                "defense_defenses": def_d,
-                "last_reset": datetime.now().strftime("%Y-%m-%d")
-            })
-            add_or_update_player(discord_id, tag, data)
-        else:
-            print(f"❌ Failed to update: {tag}")
+                data.update({
+                    "prev_trophies": trophies,
+                    "prev_rank": rank,
+                    "offense_trophies": off_t,
+                    "offense_attacks": off_a,
+                    "defense_trophies": def_t,
+                    "defense_defenses": def_d,
+                    "last_reset": datetime.now().strftime("%Y-%m-%d")
+                })
+                add_or_update_player(discord_id, tag, data)
+            else:
+                print(f"❌ Failed to update: {tag}")
+
+        except Exception as e:
+            print(f"⚠️ Error updating player {player.get('player_tag')}: {e}")
     print("✔️ Background update complete!")
 
-@tasks.loop(minutes=1)
-async def reset_offense_defense():
-    now = datetime.now()
-    if now.hour == 10 and now.minute == 30:
-        players_col.update_many({}, {
-            "$set": {
-                "offense_trophies": 0,
-                "offense_attacks": 0,
-                "defense_trophies": 0,
-                "defense_defenses": 0
-            }
-        })
-        print("🔄 Daily reset done at 10:30 AM!")
-
-# ======================= UI LEADERBOARD =======================
-
-class LeaderboardView(ui.View):
-    def __init__(self, players, color, name, page=0):
-        super().__init__(timeout=None)
-        self.players = players
-        self.color = color
-        self.name = name
-        self.page = page
-
-    def get_embed(self):
-        start = self.page * LEADERBOARD_PAGE_SIZE
-        end = start + LEADERBOARD_PAGE_SIZE
-        embed = discord.Embed(title=self.name, color=self.color)
-        for i, p in enumerate(self.players[start:end], start=start + 1):
-            embed.add_field(
-                name=f"{i}. {p['name']} (#{p['player_tag']})",
-                value=f"{EMOJI_TROPHY} {p['trophies']} | {EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | {EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}",
-                inline=False
-            )
-        return embed
-
-    async def update_message(self, interaction):
-        self.players = get_all_players()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
-
-    @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
-    async def prev_page(self, interaction, button):
-        if self.page > 0:
-            self.page -= 1
-            await self.update_message(interaction)
-
-    @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
-    async def next_page(self, interaction, button):
-        if (self.page + 1) * LEADERBOARD_PAGE_SIZE < len(self.players):
-            self.page += 1
-            await self.update_message(interaction)
-
-    @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
-    async def refresh(self, interaction, button):
-        self.players = get_all_players()
-        await self.update_message(interaction)
-
-# ======================= BOT EVENTS =======================
+# ======================= DISCORD COMMANDS =======================
 
 @bot.event
 async def on_ready():
-    print("🔄 Bot is starting...")
-    try:
-        players = get_all_players()
-        print(f"📊 Total players: {len(players)}")
-        update_players_data.start()
-        reset_offense_defense.start()
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} commands")
-        print(f"✅ Logged in as {bot.user}")
-    except Exception:
-        print("❌ Error in on_ready:")
-        traceback.print_exc()
-
-# ======================= COMMANDS =======================
+    await bot.tree.sync()
+    print(f"🤖 Bot is online as {bot.user}")
+    update_players_data.start()
 
 @bot.tree.command(name="link", description="Link your Clash of Clans account")
+@app_commands.describe(player_tag="Your player tag (e.g., #ABC123)")
 async def link(interaction: discord.Interaction, player_tag: str):
-    await interaction.response.defer()
-    data = fetch_player_data(player_tag)
-    if not data:
-        await interaction.followup.send("❌ Failed to fetch data! Please check your tag or try again later.")
-        return
-    add_or_update_player(str(interaction.user.id), player_tag.replace("#", ""), data)
-    await interaction.followup.send(f"✅ Linked {data['name']} ({player_tag})")
+    tag_clean = player_tag.replace("#", "").upper()
+    data = fetch_player_data(tag_clean)
+
+    if data:
+        add_or_update_player(str(interaction.user.id), tag_clean, data)
+        await interaction.response.send_message(f"✅ Linked to player `{data['name']}` ({player_tag})")
+    else:
+        await interaction.response.send_message("❌ Failed to fetch player data.")
 
 @bot.tree.command(name="unlink", description="Unlink your account(s)")
+@app_commands.describe(player_tag="Optional: Specific tag to unlink")
 async def unlink(interaction: discord.Interaction, player_tag: str = None):
-    remove_player(str(interaction.user.id), player_tag)
-    await interaction.response.send_message("✅ Account unlinked!")
+    discord_id = str(interaction.user.id)
+    if player_tag:
+        tag_clean = player_tag.replace("#", "").upper()
+        result = players_col.delete_one({"discord_id": discord_id, "player_tag": tag_clean})
+        if result.deleted_count > 0:
+            await interaction.response.send_message(f"✅ Unlinked player `{tag_clean}`.")
+        else:
+            await interaction.response.send_message(f"⚠️ No player found with tag `{tag_clean}`.")
+    else:
+        result = players_col.delete_many({"discord_id": discord_id})
+        if result.deleted_count > 0:
+            await interaction.response.send_message("✅ All linked accounts unlinked.")
+        else:
+            await interaction.response.send_message("⚠️ You have no linked accounts.")
 
-@bot.tree.command(name="leaderboard", description="Show the leaderboard")
-async def leaderboard(interaction: discord.Interaction, name: str = "Leaderboard", color: str = "000000"):
+class LeaderboardView(ui.View):
+    def __init__(self, players, page):
+        super().__init__(timeout=60)
+        self.players = players
+        self.page = page
+
+    def format_page(self):
+        start = self.page * LEADERBOARD_PAGE_SIZE
+        end = start + LEADERBOARD_PAGE_SIZE
+        lines = []
+        for idx, player in enumerate(self.players[start:end], start=1+start):
+            lines.append(f"**#{idx}** {player['name']} - {player['trophies']} {EMOJI_TROPHY}")
+        return "\n".join(lines)
+
+    @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            embed = discord.Embed(title="🏆 Leaderboard", description=self.format_page(), color=discord.Color.gold())
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: ui.Button):
+        max_pages = len(self.players) // LEADERBOARD_PAGE_SIZE
+        if self.page < max_pages:
+            self.page += 1
+            embed = discord.Embed(title="🏆 Leaderboard", description=self.format_page(), color=discord.Color.gold())
+            await interaction.response.edit_message(embed=embed, view=self)
+
+@bot.tree.command(name="leaderboard", description="View the top players")
+async def leaderboard(interaction: discord.Interaction):
     players = get_all_players()
-    print(f"📥 /leaderboard called by {interaction.user} - {len(players)} players found")
     if not players:
-        await interaction.response.send_message("❌ No players linked yet.")
+        await interaction.response.send_message("🚫 No players linked yet.")
         return
-    try:
-        color_int = int(color, 16)
-    except:
-        color_int = 0x000000
-    view = LeaderboardView(players, color_int, name)
-    await interaction.response.send_message(embed=view.get_embed(), view=view)
 
-# ======================= RUN =======================
+    view = LeaderboardView(players, page=0)
+    embed = discord.Embed(title="🏆 Leaderboard", description=view.format_page(), color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed, view=view)
 
-bot.run(TOKEN)
+# ======================= BOT RUN =======================
+
+bot.run(TOKEN, reconnect=True)        
