@@ -1,4 +1,5 @@
-discord.py==2.3.2
-flask==3.0.3
-pymongo==4.7.1
-requests==2.32.3
+discord.py
+flask
+pymongo
+requests
+pytz
