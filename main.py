@@ -105,7 +105,8 @@ def fetch_player_data(tag: str):
 
 async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
-    # ======================= Leaderboard View =======================
+
+# ======================= Leaderboard View =======================
 
 class LeaderboardView(ui.View):
     def __init__(self, players, color, title):
@@ -116,13 +117,6 @@ class LeaderboardView(ui.View):
         self.title = title
         self.timestamp = datetime.now().strftime("%d-%m-%Y %I:%M %p")
         self.max_page = (len(self.players) - 1) // LEADERBOARD_PAGE_SIZE
-        self.update_buttons()
-
-    def update_buttons(self):
-        self.clear_items()
-        self.add_item(ui.Button(label="⬅️ Prev", style=discord.ButtonStyle.secondary, disabled=self.page == 0, custom_id="prev"))
-        self.add_item(ui.Button(label="➡️ Next", style=discord.ButtonStyle.secondary, disabled=self.page == self.max_page, custom_id="next"))
-        self.add_item(ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.primary, custom_id="refresh"))
 
     def get_embed(self):
         embed = discord.Embed(title=self.title, color=self.color)
@@ -146,15 +140,15 @@ class LeaderboardView(ui.View):
 
     @ui.button(label="⬅️ Prev", style=discord.ButtonStyle.secondary)
     async def prev_button(self, interaction: discord.Interaction, button: ui.Button):
-        self.page = max(0, self.page - 1)
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        if self.page > 0:
+            self.page -= 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
     async def next_button(self, interaction: discord.Interaction, button: ui.Button):
-        self.page = min(self.max_page, self.page + 1)
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        if self.page < self.max_page:
+            self.page += 1
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
     async def refresh_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -231,7 +225,8 @@ async def force_reset(interaction: discord.Interaction):
         await interaction.followup.send("✅ Offense and defense stats manually reset.")
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to reset: {e}")
-        # ======================= BACKGROUND TASKS =======================
+
+# ======================= BACKGROUND TASKS =======================
 
 @tasks.loop(minutes=1)
 async def update_players_data():
