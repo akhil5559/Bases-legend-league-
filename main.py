@@ -73,7 +73,8 @@ def remove_player(discord_id, tag=None):
     else:
         result = players_col.delete_many({"discord_id": discord_id})
         print(f"🔁 Removed all: matched={result.deleted_count}")
-        # ======================= SAFE API CALL =======================
+
+# ======================= SAFE API CALL =======================
 def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
     tag_encoded = tag_encoded.replace("#", "%23")
@@ -171,7 +172,8 @@ async def backup_leaderboard():
             backup_col.delete_many({})
             backup_col.insert_many(players)
             print(f"💾 Backup complete with {len(players)} players (10:25 AM IST)")
-            # ======================= UI LEADERBOARD =======================
+
+# ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
     def __init__(self, players, color, name, page=0):
         super().__init__(timeout=None)
@@ -184,10 +186,14 @@ class LeaderboardView(ui.View):
         start = self.page * LEADERBOARD_PAGE_SIZE
         end = start + LEADERBOARD_PAGE_SIZE
         embed = discord.Embed(title=self.name, color=self.color)
+
+        now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        embed.set_footer(text=f"Last refreshed: {now_ist.strftime('%d-%m-%Y %I:%M %p')}")
+
         for i, p in enumerate(self.players[start:end], start=start + 1):
             embed.add_field(
                 name=f"{i}. {p['name']} (#{p['player_tag']})",
-                value=f"{EMOJI_TROPHY} {p['trophies']} | {EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | {EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}",
+                value=f"{EMOJI_TROPHY} {p['trophies']} | {EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | {EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}\n\u200b",
                 inline=False
             )
         return embed
