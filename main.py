@@ -106,7 +106,8 @@ def fetch_player_data(tag: str):
 
 async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
-    # ======================= BACKGROUND TASKS =======================
+
+# ======================= BACKGROUND TASKS =======================
 @tasks.loop(minutes=1)
 async def update_players_data():
     players = get_all_players()
@@ -152,7 +153,8 @@ async def update_players_data():
 @tasks.loop(minutes=1)
 async def reset_offense_defense():
     now = datetime.now(pytz.timezone("Asia/Kolkata"))
-    if now.hour == 10 and now.minute == 25:  # Backup 5 minutes before reset
+
+    if now.hour == 10 and now.minute == 25:
         try:
             backup_data = get_all_players()
             backups_col.insert_one({
@@ -164,15 +166,41 @@ async def reset_offense_defense():
             print(f"❌ Backup failed: {e}")
 
     elif now.hour == 10 and now.minute == 30:
-        players_col.update_many({}, {
-            "$set": {
-                "offense_trophies": 0,
-                "offense_attacks": 0,
-                "defense_trophies": 0,
-                "defense_defenses": 0
-            }
-        })
-        print("🔁 Daily reset done (10:30 AM IST)")
+        try:
+            players_col.update_many({}, {
+                "$set": {
+                    "offense_trophies": 0,
+                    "offense_attacks": 0,
+                    "defense_trophies": 0,
+                    "defense_defenses": 0
+                }
+            })
+            print("🔁 Daily reset done (10:30 AM IST)")
+        except Exception as e:
+            print(f"❌ Reset failed: {e}")
+
+    elif now.hour == 10 and now.minute == 42:
+        print("🔄 Post-reset refresh starting...")
+        players = get_all_players()
+        for player in players:
+            try:
+                discord_id = player["discord_id"]
+                tag = player["player_tag"]
+                data = await async_fetch_player_data(tag)
+                if data:
+                    data.update({
+                        "prev_trophies": data["trophies"],
+                        "prev_rank": data.get("rank", 0),
+                        "offense_trophies": 0,
+                        "offense_attacks": 0,
+                        "defense_trophies": 0,
+                        "defense_defenses": 0,
+                        "last_reset": now.strftime("%Y-%m-%d")
+                    })
+                    add_or_update_player(discord_id, tag, data)
+            except Exception as e:
+                print(f"❌ Failed refresh for {player['player_tag']}: {e}")
+        print("✅ Post-reset refresh finished.")
 
 # ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
@@ -224,60 +252,65 @@ class LeaderboardView(ui.View):
     @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction, button):
         await self.update_message(interaction)
-
-# ======================= DISCORD COMMANDS =======================
-@bot.tree.command(name="link", description="Link your Clash of Clans player tag to your Discord account.")
-@app_commands.describe(player_tag="Your Clash of Clans player tag (e.g. #8YJ98LV2C)")
-async def link(interaction: discord.Interaction, player_tag: str):
-    await interaction.response.defer(thinking=True)
-    tag = player_tag.replace("#", "").upper()
-    data = await async_fetch_player_data(tag)
-    if data:
-        add_or_update_player(interaction.user.id, tag, data)
-        await interaction.followup.send(f"✅ Linked **{data['name']}** (`{player_tag}`) to your account.")
-    else:
-        await interaction.followup.send("❌ Failed to fetch player data. Please check the tag and try again.")
-
-@bot.tree.command(name="unlink", description="Unlink your Clash of Clans tag from your Discord (or all if not specified).")
-@app_commands.describe(player_tag="Optional: tag to unlink (remove all if left blank)")
-async def unlink(interaction: discord.Interaction, player_tag: str = None):
+        # ======================= SLASH COMMANDS =======================
+@bot.tree.command(name="leaderboard", description="Show Clash of Clans leaderboard with stats.")
+async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    tag = player_tag.replace("#", "").upper() if player_tag else None
-    remove_player(interaction.user.id, tag)
-    await interaction.followup.send("✅ Account unlinked.", ephemeral=True)
-
-@bot.tree.command(name="remove", description="Remove a player tag from the leaderboard (admin only).")
-@app_commands.describe(player_tag="Tag to forcibly remove from the leaderboard")
-async def remove(interaction: discord.Interaction, player_tag: str):
-    await interaction.response.defer()
-    tag = player_tag.replace("#", "").upper()
-    result = players_col.delete_one({"player_tag": tag})
-    if result.deleted_count:
-        await interaction.followup.send(f"✅ Removed player `{tag}` from leaderboard.")
-    else:
-        await interaction.followup.send("❌ Player not found.")
-
-@bot.tree.command(name="leaderboard", description="View the top players leaderboard with stats.")
-@app_commands.describe(color="Embed color (hex, e.g. 0x3498db)", name="Leaderboard title")
-async def leaderboard(interaction: discord.Interaction, color: str = "0x3498db", name: str = "🏆 Leaderboard"):
-    await interaction.response.defer(thinking=True)
-    try:
-        color = int(color, 16)
-    except:
-        color = 0x3498db
     players = get_all_players()
-    view = LeaderboardView(players, color, name)
+    color = discord.Color.gold()
+    view = LeaderboardView(players, color, "🏆 Clan Leaderboard")
     await interaction.followup.send(embed=view.get_embed(), view=view)
 
-# ======================= BOT STARTUP =======================
+@bot.tree.command(name="link", description="Link your Clash of Clans player tag to the bot.")
+@app_commands.describe(tag="Your Clash of Clans player tag (e.g. #ABC123)")
+async def link(interaction: discord.Interaction, tag: str):
+    await interaction.response.defer()
+    tag = tag.replace("#", "").upper()
+    data = await async_fetch_player_data(tag)
+    if not data:
+        await interaction.followup.send("❌ Invalid or unavailable player tag.")
+        return
+
+    data.update({
+        "prev_trophies": data["trophies"],
+        "prev_rank": data.get("rank", 0),
+        "offense_trophies": 0,
+        "offense_attacks": 0,
+        "defense_trophies": 0,
+        "defense_defenses": 0,
+        "last_reset": datetime.now().strftime("%Y-%m-%d")
+    })
+
+    add_or_update_player(interaction.user.id, tag, data)
+    await interaction.followup.send(f"✅ Linked to {data['name']} (#{tag})")
+
+@bot.tree.command(name="unlink", description="Unlink your player tag or all tags from your account.")
+@app_commands.describe(tag="Optional: specific player tag to unlink (e.g. #ABC123)")
+async def unlink(interaction: discord.Interaction, tag: str = None):
+    tag = tag.replace("#", "").upper() if tag else None
+    remove_player(interaction.user.id, tag)
+    await interaction.response.send_message(f"✅ Unlinked {'tag ' + tag if tag else 'all tags'}.")
+
+@bot.tree.command(name="remove", description="(Admin) Remove a player by tag.")
+@app_commands.describe(tag="Player tag to remove (e.g. #ABC123)")
+async def remove(interaction: discord.Interaction, tag: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You don’t have permission.", ephemeral=True)
+        return
+    tag = tag.replace("#", "").upper()
+    result = players_col.delete_one({"player_tag": tag})
+    if result.deleted_count > 0:
+        await interaction.response.send_message(f"🗑️ Removed player with tag #{tag}.")
+    else:
+        await interaction.response.send_message("⚠️ Player not found.")
+
+# ======================= STARTUP =======================
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"✅ Logged in as {bot.user}")
     update_players_data.start()
     reset_offense_defense.start()
+    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-try:
-    bot.run(TOKEN, reconnect=True)
-except Exception as e:
-    print(f"❌ Bot failed to run: {e}")
+if __name__ == "__main__":
+    bot.run(TOKEN)
