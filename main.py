@@ -13,7 +13,7 @@ sys.modules['audioop'].avgpp = lambda *args, **kwargs: 0
 sys.modules['audioop'].rms = lambda *args, **kwargs: 0
 sys.modules['audioop'].cross = lambda *args, **kwargs: 0
 
-import discord, asyncio, requests, os, traceback
+import discord, asyncio, requests, os
 from discord.ext import commands, tasks
 from discord import app_commands, ui
 from datetime import datetime
@@ -22,6 +22,8 @@ from keep_alive import keep_alive
 import pytz
 
 keep_alive()
+
+# ======================= CONFIG =======================
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
@@ -35,11 +37,15 @@ EMOJI_DEFENSE = "<:emoji_9:1252010455694835743>"
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ======================= MONGO INIT =======================
+
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["coc_bot"]
 players_col = db["players"]
 backups_col = db["backups"]
 players_col.create_index([("trophies", -1)])
+
+# ======================= DB HELPERS =======================
 
 def add_or_update_player(discord_id, tag, data):
     update = {
@@ -76,6 +82,7 @@ def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
     tag_encoded = tag_encoded.replace("#", "%23")
     url = f"{PROXY_URL}/player/{tag_encoded}"
+
     try:
         r = requests.get(url, timeout=10)
         if r.status_code != 200:
@@ -98,8 +105,7 @@ def fetch_player_data(tag: str):
 
 async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
-
-# ======================= Leaderboard View =======================
+    # ======================= Leaderboard View =======================
 
 class LeaderboardView(ui.View):
     def __init__(self, players, color, title):
@@ -137,7 +143,8 @@ class LeaderboardView(ui.View):
         embed.description = content
         embed.set_footer(text=f"Last refreshed: {self.timestamp}")
         return embed
-@ui.button(label="⬅️ Prev", style=discord.ButtonStyle.secondary)
+
+    @ui.button(label="⬅️ Prev", style=discord.ButtonStyle.secondary)
     async def prev_button(self, interaction: discord.Interaction, button: ui.Button):
         self.page = max(0, self.page - 1)
         self.update_buttons()
@@ -153,8 +160,7 @@ class LeaderboardView(ui.View):
     async def refresh_button(self, interaction: discord.Interaction, button: ui.Button):
         self.timestamp = datetime.now().strftime("%d-%m-%Y %I:%M %p")
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
-
-# ======================= /leaderboard COMMAND =======================
+        # ======================= SLASH COMMANDS =======================
 
 @bot.tree.command(name="leaderboard", description="Show leaderboard (with filters, color, title).")
 @app_commands.describe(
@@ -175,15 +181,9 @@ async def leaderboard(
     except:
         color_obj = discord.Color.gold()
 
-    players = [
-        p for p in get_all_players()
-        if p["trophies"] >= min_trophies
-    ]
-
+    players = [p for p in get_all_players() if p["trophies"] >= min_trophies]
     view = LeaderboardView(players, color_obj, name)
     await interaction.followup.send(embed=view.get_embed(), view=view)
-
-# ======================= /link COMMAND =======================
 
 @bot.tree.command(name="link", description="Link your Clash of Clans account.")
 @app_commands.describe(tag="Your player tag (e.g. #ABC123)")
@@ -197,15 +197,11 @@ async def link(interaction: discord.Interaction, tag: str):
     else:
         await interaction.followup.send("❌ Invalid or unreachable player tag.", ephemeral=True)
 
-# ======================= /unlink COMMAND =======================
-
 @bot.tree.command(name="unlink", description="Unlink your Clash of Clans account.")
 @app_commands.describe(tag="Your player tag (optional, removes all if omitted)")
 async def unlink(interaction: discord.Interaction, tag: str = None):
     remove_player(interaction.user.id, tag)
     await interaction.response.send_message("✅ Player(s) unlinked.", ephemeral=True)
-
-# ======================= /remove COMMAND =======================
 
 @bot.tree.command(name="remove", description="(Admin) Remove a player from leaderboard.")
 @app_commands.describe(tag="The player tag to remove (e.g. #ABC123)")
@@ -215,8 +211,6 @@ async def remove(interaction: discord.Interaction, tag: str):
         return
     remove_player(None, tag)
     await interaction.response.send_message(f"✅ Player {tag} removed from leaderboard.", ephemeral=True)
-
-# ======================= /force_reset COMMAND =======================
 
 @bot.tree.command(name="force_reset", description="(Admin) Manually reset offense and defense stats for all players.")
 async def force_reset(interaction: discord.Interaction):
@@ -237,8 +231,7 @@ async def force_reset(interaction: discord.Interaction):
         await interaction.followup.send("✅ Offense and defense stats manually reset.")
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to reset: {e}")
-
-# ======================= BACKGROUND TASKS =======================
+        # ======================= BACKGROUND TASKS =======================
 
 @tasks.loop(minutes=1)
 async def update_players_data():
@@ -340,4 +333,4 @@ async def on_ready():
     reset_offense_defense.start()
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-bot.run(TOKEN)        
+bot.run(TOKEN)
