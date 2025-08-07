@@ -24,6 +24,7 @@ import pytz
 keep_alive()
 
 # ======================= CONFIG =======================
+
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 PROXY_URL = "https://clash-of-clans-api-4bi0.onrender.com"
@@ -37,6 +38,7 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ======================= MONGO INIT =======================
+
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["coc_bot"]
 players_col = db["players"]
@@ -44,6 +46,7 @@ backups_col = db["backups"]
 players_col.create_index([("trophies", -1)])
 
 # ======================= DB HELPERS =======================
+
 def add_or_update_player(discord_id, tag, data):
     update = {
         "discord_id": discord_id,
@@ -76,6 +79,7 @@ def remove_player(discord_id, tag=None):
         print(f"🔁 Removed all: matched={result.deleted_count}")
 
 # ======================= SAFE API CALL =======================
+
 def fetch_player_data(tag: str):
     tag_encoded = tag if tag.startswith("#") else f"#{tag}"
     tag_encoded = tag_encoded.replace("#", "%23")
@@ -108,6 +112,7 @@ async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
 
 # ======================= BACKGROUND TASKS =======================
+
 @tasks.loop(minutes=1)
 async def update_players_data():
     players = get_all_players()
@@ -201,110 +206,147 @@ async def reset_offense_defense():
             except Exception as e:
                 print(f"❌ Failed refresh for {player['player_tag']}: {e}")
         print("✅ Post-reset refresh finished.")
+        # ======================= /force_reset COMMAND =======================
 
-# ======================= UI LEADERBOARD =======================
-class LeaderboardView(ui.View):
-    def __init__(self, players, color, name, page=0):
-        super().__init__(timeout=None)
-        self.players = players
-        self.color = color
-        self.name = name
-        self.page = page
-        self.last_refreshed = datetime.now().strftime("%d-%m-%Y %I:%M %p")
+@bot.tree.command(name="force_reset", description="(Admin) Manually reset offense and defense stats for all players.")
+async def force_reset(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You must be an administrator to use this command.", ephemeral=True)
+        return
 
-    def get_embed(self):
-        start = self.page * LEADERBOARD_PAGE_SIZE
-        end = start + LEADERBOARD_PAGE_SIZE
-        embed = discord.Embed(title=self.name, color=self.color)
-
-        for i, p in enumerate(self.players[start:end], start=start + 1):
-            embed.add_field(
-                name=f"{i}. {p['name']} (#{p['player_tag']})",
-                value=(
-                    f"{EMOJI_TROPHY} {p['trophies']} | "
-                    f"{EMOJI_OFFENSE} +{p.get('offense_trophies', 0)}/{p.get('offense_attacks', 0)} | "
-                    f"{EMOJI_DEFENSE} -{p.get('defense_trophies', 0)}/{p.get('defense_defenses', 0)}\n\u200b"
-                ),
-                inline=False
-            )
-
-        embed.set_footer(text=f"Last refreshed: {self.last_refreshed}")
-        return embed
-
-    async def update_message(self, interaction):
-        await interaction.response.defer()
-        self.players = get_all_players()
-        self.last_refreshed = datetime.now().strftime("%d-%m-%Y %I:%M %p")
-        await interaction.edit_original_response(embed=self.get_embed(), view=self)
-
-    @ui.button(label="⬅️ Previous", style=discord.ButtonStyle.secondary)
-    async def prev_page(self, interaction, button):
-        if self.page > 0:
-            self.page -= 1
-            await self.update_message(interaction)
-
-    @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
-    async def next_page(self, interaction, button):
-        if (self.page + 1) * LEADERBOARD_PAGE_SIZE < len(self.players):
-            self.page += 1
-            await self.update_message(interaction)
-
-    @ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
-    async def refresh(self, interaction, button):
-        await self.update_message(interaction)
-        # ======================= SLASH COMMANDS =======================
-@bot.tree.command(name="leaderboard", description="Show Clash of Clans leaderboard with stats.")
-async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    players = get_all_players()
-    color = discord.Color.gold()
-    view = LeaderboardView(players, color, "🏆 Clan Leaderboard")
-    await interaction.followup.send(embed=view.get_embed(), view=view)
+    try:
+        players_col.update_many({}, {
+            "$set": {
+                "offense_trophies": 0,
+                "offense_attacks": 0,
+                "defense_trophies": 0,
+                "defense_defenses": 0
+            }
+        })
+        await interaction.followup.send("✅ Offense and defense stats manually reset.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to reset: {e}")
 
-@bot.tree.command(name="link", description="Link your Clash of Clans player tag to the bot.")
-@app_commands.describe(tag="Your Clash of Clans player tag (e.g. #ABC123)")
+# ======================= /link COMMAND =======================
+
+@bot.tree.command(name="link", description="Link your Clash of Clans account.")
+@app_commands.describe(tag="Your player tag (e.g. #ABC123)")
 async def link(interaction: discord.Interaction, tag: str):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
+
     tag = tag.replace("#", "").upper()
     data = await async_fetch_player_data(tag)
-    if not data:
-        await interaction.followup.send("❌ Invalid or unavailable player tag.")
-        return
+    if data:
+        add_or_update_player(interaction.user.id, tag, data)
+        await interaction.followup.send(f"✅ Linked: {data['name']} ({tag})", ephemeral=True)
+    else:
+        await interaction.followup.send("❌ Invalid or unreachable player tag.", ephemeral=True)
 
-    data.update({
-        "prev_trophies": data["trophies"],
-        "prev_rank": data.get("rank", 0),
-        "offense_trophies": 0,
-        "offense_attacks": 0,
-        "defense_trophies": 0,
-        "defense_defenses": 0,
-        "last_reset": datetime.now().strftime("%Y-%m-%d")
-    })
+# ======================= /unlink COMMAND =======================
 
-    add_or_update_player(interaction.user.id, tag, data)
-    await interaction.followup.send(f"✅ Linked to {data['name']} (#{tag})")
-
-@bot.tree.command(name="unlink", description="Unlink your player tag or all tags from your account.")
-@app_commands.describe(tag="Optional: specific player tag to unlink (e.g. #ABC123)")
+@bot.tree.command(name="unlink", description="Unlink your Clash of Clans account.")
+@app_commands.describe(tag="Your player tag (optional, removes all if omitted)")
 async def unlink(interaction: discord.Interaction, tag: str = None):
-    tag = tag.replace("#", "").upper() if tag else None
     remove_player(interaction.user.id, tag)
-    await interaction.response.send_message(f"✅ Unlinked {'tag ' + tag if tag else 'all tags'}.")
+    await interaction.response.send_message("✅ Player(s) unlinked.", ephemeral=True)
 
-@bot.tree.command(name="remove", description="(Admin) Remove a player by tag.")
-@app_commands.describe(tag="Player tag to remove (e.g. #ABC123)")
+# ======================= /remove COMMAND =======================
+
+@bot.tree.command(name="remove", description="(Admin) Remove a player from leaderboard.")
+@app_commands.describe(tag="The player tag to remove (e.g. #ABC123)")
 async def remove(interaction: discord.Interaction, tag: str):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You don’t have permission.", ephemeral=True)
+        await interaction.response.send_message("❌ You must be an admin to use this command.", ephemeral=True)
         return
-    tag = tag.replace("#", "").upper()
-    result = players_col.delete_one({"player_tag": tag})
-    if result.deleted_count > 0:
-        await interaction.response.send_message(f"🗑️ Removed player with tag #{tag}.")
-    else:
-        await interaction.response.send_message("⚠️ Player not found.")
+    remove_player(None, tag)
+    await interaction.response.send_message(f"✅ Player {tag} removed from leaderboard.", ephemeral=True)
 
-# ======================= STARTUP =======================
+# ======================= /leaderboard COMMAND =======================
+
+class LeaderboardView(ui.View):
+    def __init__(self, players, color, title):
+        super().__init__(timeout=60)
+        self.players = sorted(players, key=lambda x: x["trophies"], reverse=True)
+        self.page = 0
+        self.color = color
+        self.title = title
+        self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        self.max_page = (len(self.players) - 1) // LEADERBOARD_PAGE_SIZE
+
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.clear_items()
+        self.add_item(ui.Button(label="⬅️ Prev", style=discord.ButtonStyle.secondary, disabled=self.page == 0, custom_id="prev"))
+        self.add_item(ui.Button(label="➡️ Next", style=discord.ButtonStyle.secondary, disabled=self.page == self.max_page, custom_id="next"))
+
+    def get_embed(self):
+        embed = discord.Embed(
+            title=self.title,
+            color=self.color
+        )
+
+        start = self.page * LEADERBOARD_PAGE_SIZE
+        end = start + LEADERBOARD_PAGE_SIZE
+        content = ""
+        for i, p in enumerate(self.players[start:end], start=start + 1):
+            offense_avg = int(p["offense_trophies"] / p["offense_attacks"]) if p["offense_attacks"] else 0
+            defense_avg = int(p["defense_trophies"] / p["defense_defenses"]) if p["defense_defenses"] else 0
+            content += (
+                f"**{i}. {p['name']}**\n"
+                f"{EMOJI_TROPHY} `{p['trophies']}` "
+                f"{EMOJI_OFFENSE} `{offense_avg}` "
+                f"{EMOJI_DEFENSE} `{defense_avg}`\n\n"
+            )
+
+        embed.description = content
+        embed.set_footer(text=f"Last refreshed: {self.timestamp}")
+        return embed
+
+    @ui.button(label="⬅️ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: ui.Button):
+        self.page = max(0, self.page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @ui.button(label="➡️ Next", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: ui.Button):
+        self.page = min(self.max_page, self.page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+@bot.tree.command(name="leaderboard", description="Show leaderboard (with filters, color, title).")
+@app_commands.describe(
+    name="Custom title for the leaderboard (optional)",
+    color="Hex color for the embed (e.g. #FF0000)",
+    min_trophies="Minimum trophies to include"
+)
+async def leaderboard(
+    interaction: discord.Interaction,
+    name: str = "🏆 Clan Leaderboard",
+    color: str = "#FFD700",
+    min_trophies: int = 0
+):
+    await interaction.response.defer()
+
+    try:
+        color_int = int(color.lstrip("#"), 16)
+        color_obj = discord.Color(color_int)
+    except:
+        color_obj = discord.Color.gold()
+
+    players = [
+        p for p in get_all_players()
+        if p["trophies"] >= min_trophies
+    ]
+
+    view = LeaderboardView(players, color_obj, name)
+    await interaction.followup.send(embed=view.get_embed(), view=view)
+
+# ======================= START BOT =======================
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
@@ -312,5 +354,4 @@ async def on_ready():
     reset_offense_defense.start()
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-if __name__ == "__main__":
-    bot.run(TOKEN)
+bot.run(TOKEN)
