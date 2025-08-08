@@ -252,13 +252,36 @@ async def remove(interaction: discord.Interaction, player_tag: str):
         await interaction.followup.send("❌ Player not found.")
 
 @bot.tree.command(name="leaderboard")
-@app_commands.describe(color="Embed color (default blue)", name="Leaderboard title")
-async def leaderboard(interaction: discord.Interaction, color: str = "0x3498db", name: str = "🏆 Leaderboard"):
+@app_commands.describe(
+    color="Embed color (default blue)",
+    name="Leaderboard title",
+    force_reset="Set to True to reset offense/defense stats before showing leaderboard"
+)
+async def leaderboard(
+    interaction: discord.Interaction,
+    color: str = "0x3498db",
+    name: str = "🏆 Leaderboard",
+    force_reset: bool = False
+):
     await interaction.response.defer(thinking=True)
+
+    # ✅ Force reset if requested
+    if force_reset:
+        players_col.update_many({}, {
+            "$set": {
+                "offense_trophies": 0,
+                "offense_attacks": 0,
+                "defense_trophies": 0,
+                "defense_defenses": 0
+            }
+        })
+        print(f"⚡ Force reset done by {interaction.user} at {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
+
     try:
         color = int(color, 16)
     except:
         color = 0x3498db
+
     players = get_all_players()
     view = LeaderboardView(players, color, name)
     await interaction.followup.send(embed=view.get_embed(), view=view)
