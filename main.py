@@ -107,6 +107,9 @@ async def async_fetch_player_data(tag):
     return await asyncio.to_thread(fetch_player_data, tag)
 
 # ======================= BACKGROUND TASKS =======================
+last_reset_date = None
+last_backup_date = None
+
 @tasks.loop(minutes=1)
 async def update_players_data():
     players = get_all_players()
@@ -151,8 +154,9 @@ async def update_players_data():
 
 @tasks.loop(minutes=1)
 async def reset_offense_defense():
-    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # Convert UTC to IST
-    if now.hour == 10 and now.minute == 30:
+    global last_reset_date
+    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
+    if now.hour == 22 and now.minute == 30 and last_reset_date != now.date():
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
@@ -161,17 +165,20 @@ async def reset_offense_defense():
                 "defense_defenses": 0
             }
         })
-        print("🔁 Daily offense/defense reset done (10:30 AM IST)")
+        last_reset_date = now.date()
+        print("🔁 Daily offense/defense reset done (10:30 PM IST)")
 
 @tasks.loop(minutes=1)
 async def backup_leaderboard():
-    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # Convert UTC to IST
-    if now.hour == 10 and now.minute == 25:
+    global last_backup_date
+    now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
+    if now.hour == 22 and now.minute == 25 and last_backup_date != now.date():
         players = list(players_col.find({}))
         if players:
             backup_col.delete_many({})
             backup_col.insert_many(players)
-            print(f"💾 Backup complete with {len(players)} players (10:25 AM IST)")
+            last_backup_date = now.date()
+            print(f"💾 Backup complete with {len(players)} players (10:25 PM IST)")
 
 # ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
