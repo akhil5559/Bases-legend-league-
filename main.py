@@ -156,7 +156,8 @@ async def update_players_data():
 async def reset_offense_defense():
     global last_reset_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    if now.hour == 22 and now.minute == 30 and last_reset_date != now.date():
+    # Changed hour from 22 (10 PM) to 10 (10 AM)
+    if now.hour == 10 and now.minute == 30 and last_reset_date != now.date():
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
@@ -166,19 +167,40 @@ async def reset_offense_defense():
             }
         })
         last_reset_date = now.date()
-        print("🔁 Daily offense/defense reset done (10:30 PM IST)")
+        print("🔁 Daily offense/defense reset done (10:30 AM IST)")
 
 @tasks.loop(minutes=1)
 async def backup_leaderboard():
     global last_backup_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    if now.hour == 22 and now.minute == 25 and last_backup_date != now.date():
+    # Changed hour from 22 (10 PM) to 10 (10 AM)
+    if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():
         players = list(players_col.find({}))
         if players:
             backup_col.delete_many({})
             backup_col.insert_many(players)
             last_backup_date = now.date()
-            print(f"💾 Backup complete with {len(players)} players (10:25 PM IST)")
+            print(f"💾 Backup complete with {len(players)} players (10:25 AM IST)")
+
+# ======================= ONE-TIME RESTORE FUNCTION =======================
+def restore_latest_backup_once():
+    # To ensure restore only once per bot start
+    if getattr(restore_latest_backup_once, "done", False):
+        return
+    backup_players = list(backup_col.find({}))
+    if not backup_players:
+        print("❌ No backup found in backup_players collection!")
+        return
+
+    # Clear current players collection
+    players_col.delete_many({})
+
+    # Insert backup data to players collection
+    players_col.insert_many(backup_players)
+    print(f"✅ Restored {len(backup_players)} players from latest 10:25 PM backup.")
+
+    # Mark as done
+    restore_latest_backup_once.done = True
 
 # ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
@@ -298,6 +320,10 @@ async def leaderboard(
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ Logged in as {bot.user}")
+
+    # One-time restore of backup from 10:25 PM today
+    restore_latest_backup_once()
+
     update_players_data.start()
     reset_offense_defense.start()
     backup_leaderboard.start()
