@@ -131,10 +131,12 @@ async def update_players_data():
                 delta = data["trophies"] - trophies
                 if delta > 0:
                     off_t += delta
-                    off_a += 1
                 elif delta < 0:
                     def_t += abs(delta)
-                    def_d += 1
+
+                # Fix offense/defense attack counts by ensuring minimum equal to attack/defense logs from API
+                off_a = max(off_a, data.get("attacks", 0))
+                def_d = max(def_d, data.get("defenses", 0))
 
                 data.update({
                     "prev_trophies": trophies,
@@ -156,7 +158,6 @@ async def update_players_data():
 async def reset_offense_defense():
     global last_reset_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    # Changed hour from 22 (10 PM) to 10 (10 AM)
     if now.hour == 10 and now.minute == 30 and last_reset_date != now.date():
         players_col.update_many({}, {
             "$set": {
@@ -173,7 +174,6 @@ async def reset_offense_defense():
 async def backup_leaderboard():
     global last_backup_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    # Changed hour from 22 (10 PM) to 10 (10 AM)
     if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():
         players = list(players_col.find({}))
         if players:
@@ -181,26 +181,6 @@ async def backup_leaderboard():
             backup_col.insert_many(players)
             last_backup_date = now.date()
             print(f"💾 Backup complete with {len(players)} players (10:25 AM IST)")
-
-# ======================= ONE-TIME RESTORE FUNCTION =======================
-def restore_latest_backup_once():
-    # To ensure restore only once per bot start
-    if getattr(restore_latest_backup_once, "done", False):
-        return
-    backup_players = list(backup_col.find({}))
-    if not backup_players:
-        print("❌ No backup found in backup_players collection!")
-        return
-
-    # Clear current players collection
-    players_col.delete_many({})
-
-    # Insert backup data to players collection
-    players_col.insert_many(backup_players)
-    print(f"✅ Restored {len(backup_players)} players from latest 10:25 PM backup.")
-
-    # Mark as done
-    restore_latest_backup_once.done = True
 
 # ======================= UI LEADERBOARD =======================
 class LeaderboardView(ui.View):
@@ -320,10 +300,6 @@ async def leaderboard(
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ Logged in as {bot.user}")
-
-    # One-time restore of backup from 10:25 PM today
-    restore_latest_backup_once()
-
     update_players_data.start()
     reset_offense_defense.start()
     backup_leaderboard.start()
