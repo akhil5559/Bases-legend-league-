@@ -51,15 +51,13 @@ def add_or_update_player(discord_id, tag, data):
         "trophies": data["trophies"],
         "rank": data.get("rank", 0),
         "prev_trophies": data.get("prev_trophies", data["trophies"]),
-        "prev_rank": data.get("prev_rank", data.get("rank", 0)),
+        "prev_rank": data.get("prev_rank", data["rank"]),
         "attacks": data.get("attacks", 0),
         "defenses": data.get("defenses", 0),
         "offense_trophies": data.get("offense_trophies", 0),
         "offense_attacks": data.get("offense_attacks", 0),
         "defense_trophies": data.get("defense_trophies", 0),
         "defense_defenses": data.get("defense_defenses", 0),
-        "prev_attack_logs": data.get("prev_attack_logs", 0),
-        "prev_defense_logs": data.get("prev_defense_logs", 0),
         "last_reset": data.get("last_reset", datetime.now().strftime("%Y-%m-%d"))
     }
     players_col.update_one({"player_tag": tag}, {"$set": update}, upsert=True)
@@ -123,33 +121,23 @@ async def update_players_data():
 
             trophies = player["trophies"]
             rank = player.get("rank", 0)
-
             off_t = player.get("offense_trophies", 0)
             off_a = player.get("offense_attacks", 0)
             def_t = player.get("defense_trophies", 0)
             def_d = player.get("defense_defenses", 0)
 
-            prev_attack_logs = player.get("prev_attack_logs", 0)
-            prev_defense_logs = player.get("prev_defense_logs", 0)
-
             data = await async_fetch_player_data(tag)
             if data:
                 delta = data["trophies"] - trophies
+                # ✅ Correct offense/defense calculation
                 if delta > 0:
                     off_t += delta
+                    off_a += 1
                 elif delta < 0:
                     def_t += abs(delta)
+                    def_d += 1
 
-                # Calculate attack logs difference for accumulating counts
-                current_attacks = data.get("attacks", 0)
-                current_defenses = data.get("defenses", 0)
-
-                attack_diff = max(0, current_attacks - prev_attack_logs)
-                defense_diff = max(0, current_defenses - prev_defense_logs)
-
-                off_a += attack_diff
-                def_d += defense_diff
-
+                # Ensure cumulative stats are correct
                 data.update({
                     "prev_trophies": trophies,
                     "prev_rank": rank,
@@ -157,8 +145,6 @@ async def update_players_data():
                     "offense_attacks": off_a,
                     "defense_trophies": def_t,
                     "defense_defenses": def_d,
-                    "prev_attack_logs": current_attacks,
-                    "prev_defense_logs": current_defenses,
                     "last_reset": datetime.now().strftime("%Y-%m-%d")
                 })
                 add_or_update_player(discord_id, tag, data)
@@ -172,15 +158,13 @@ async def update_players_data():
 async def reset_offense_defense():
     global last_reset_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    if now.hour == 10 and now.minute == 30 and last_reset_date != now.date():
+    if now.hour == 10 and now.minute == 30 and last_reset_date != now.date():  # ✅ AM reset
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
                 "offense_attacks": 0,
                 "defense_trophies": 0,
-                "defense_defenses": 0,
-                "prev_attack_logs": 0,
-                "prev_defense_logs": 0
+                "defense_defenses": 0
             }
         })
         last_reset_date = now.date()
@@ -190,7 +174,7 @@ async def reset_offense_defense():
 async def backup_leaderboard():
     global last_backup_date
     now = datetime.utcnow() + timedelta(hours=5, minutes=30)  # IST
-    if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():
+    if now.hour == 10 and now.minute == 25 and last_backup_date != now.date():  # ✅ AM backup
         players = list(players_col.find({}))
         if players:
             backup_col.delete_many({})
@@ -290,16 +274,13 @@ async def leaderboard(
 ):
     await interaction.response.defer(thinking=True)
 
-    # ✅ Force reset if requested
     if force_reset:
         players_col.update_many({}, {
             "$set": {
                 "offense_trophies": 0,
                 "offense_attacks": 0,
                 "defense_trophies": 0,
-                "defense_defenses": 0,
-                "prev_attack_logs": 0,
-                "prev_defense_logs": 0
+                "defense_defenses": 0
             }
         })
         print(f"⚡ Force reset done by {interaction.user} at {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
@@ -318,6 +299,12 @@ async def leaderboard(
 async def on_ready():
     await bot.tree.sync()
     print(f"✅ Logged in as {bot.user}")
+
+    # ✅ Delay background tasks to prevent Render timeout
+    asyncio.create_task(start_background_tasks())
+
+async def start_background_tasks():
+    await asyncio.sleep(5)
     update_players_data.start()
     reset_offense_defense.start()
     backup_leaderboard.start()
