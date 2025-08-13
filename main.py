@@ -51,13 +51,15 @@ def add_or_update_player(discord_id, tag, data):
         "trophies": data["trophies"],
         "rank": data.get("rank", 0),
         "prev_trophies": data.get("prev_trophies", data["trophies"]),
-        "prev_rank": data.get("prev_rank", data["rank"]),
+        "prev_rank": data.get("prev_rank", data.get("rank", 0)),
         "attacks": data.get("attacks", 0),
         "defenses": data.get("defenses", 0),
         "offense_trophies": data.get("offense_trophies", 0),
         "offense_attacks": data.get("offense_attacks", 0),
         "defense_trophies": data.get("defense_trophies", 0),
         "defense_defenses": data.get("defense_defenses", 0),
+        "prev_attack_logs": data.get("prev_attack_logs", 0),
+        "prev_defense_logs": data.get("prev_defense_logs", 0),
         "last_reset": data.get("last_reset", datetime.now().strftime("%Y-%m-%d"))
     }
     players_col.update_one({"player_tag": tag}, {"$set": update}, upsert=True)
@@ -121,10 +123,14 @@ async def update_players_data():
 
             trophies = player["trophies"]
             rank = player.get("rank", 0)
+
             off_t = player.get("offense_trophies", 0)
             off_a = player.get("offense_attacks", 0)
             def_t = player.get("defense_trophies", 0)
             def_d = player.get("defense_defenses", 0)
+
+            prev_attack_logs = player.get("prev_attack_logs", 0)
+            prev_defense_logs = player.get("prev_defense_logs", 0)
 
             data = await async_fetch_player_data(tag)
             if data:
@@ -134,9 +140,15 @@ async def update_players_data():
                 elif delta < 0:
                     def_t += abs(delta)
 
-                # Fix offense/defense attack counts by ensuring minimum equal to attack/defense logs from API
-                off_a = max(off_a, data.get("attacks", 0))
-                def_d = max(def_d, data.get("defenses", 0))
+                # Calculate attack logs difference for accumulating counts
+                current_attacks = data.get("attacks", 0)
+                current_defenses = data.get("defenses", 0)
+
+                attack_diff = max(0, current_attacks - prev_attack_logs)
+                defense_diff = max(0, current_defenses - prev_defense_logs)
+
+                off_a += attack_diff
+                def_d += defense_diff
 
                 data.update({
                     "prev_trophies": trophies,
@@ -145,6 +157,8 @@ async def update_players_data():
                     "offense_attacks": off_a,
                     "defense_trophies": def_t,
                     "defense_defenses": def_d,
+                    "prev_attack_logs": current_attacks,
+                    "prev_defense_logs": current_defenses,
                     "last_reset": datetime.now().strftime("%Y-%m-%d")
                 })
                 add_or_update_player(discord_id, tag, data)
@@ -164,7 +178,9 @@ async def reset_offense_defense():
                 "offense_trophies": 0,
                 "offense_attacks": 0,
                 "defense_trophies": 0,
-                "defense_defenses": 0
+                "defense_defenses": 0,
+                "prev_attack_logs": 0,
+                "prev_defense_logs": 0
             }
         })
         last_reset_date = now.date()
@@ -281,7 +297,9 @@ async def leaderboard(
                 "offense_trophies": 0,
                 "offense_attacks": 0,
                 "defense_trophies": 0,
-                "defense_defenses": 0
+                "defense_defenses": 0,
+                "prev_attack_logs": 0,
+                "prev_defense_logs": 0
             }
         })
         print(f"⚡ Force reset done by {interaction.user} at {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
